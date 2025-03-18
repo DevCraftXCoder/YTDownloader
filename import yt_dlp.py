@@ -62,13 +62,13 @@ def convert_video(input_file, output_format):
         # Adjust FFmpeg conversion based on output format (MP3 for audio)
         if output_format == 'mp3':
             # Convert video/audio to MP3 (audio-only conversion)
-            result = subprocess.run([
+            result = subprocess.run([ 
                 "ffmpeg", "-y", "-i", input_file,
                 "-vn", "-acodec", "libmp3lame", "-ab", "192k", output_file
             ], check=True, capture_output=True, text=True)
         else:
             # Standard video conversion (e.g., MP4 or MOV)
-            result = subprocess.run([
+            result = subprocess.run([ 
                 "ffmpeg", "-y", "-i", input_file,
                 "-c:v", "copy", "-c:a", "aac", "-loglevel", "error", output_file
             ], check=True, capture_output=True, text=True)
@@ -81,9 +81,26 @@ def convert_video(input_file, output_format):
         print(f"Conversion failed: {e.stderr}")
         return None
 
+# Function to validate download directory (checks if the directory exists and is writable)
+def validate_directory(directory):
+    """Check if the given directory exists and is writable."""
+    if not os.path.isdir(directory):
+        logging.error(f"Directory does not exist: {directory}")
+        return False
+    if not os.access(directory, os.W_OK):
+        logging.error(f"Directory is not writable: {directory}")
+        return False
+    return True
+
 # Function to download a video and show a progress bar
 def download_video_with_progress(user_input, download_dir, output_format="mp4"):
     """Downloads a YouTube video and converts it to MP4, MOV, or MP3 with a progress bar."""
+    
+    # Validate download directory before proceeding
+    if not validate_directory(download_dir):
+        logging.error(f"Download directory '{download_dir}' is invalid. Exiting.")
+        sys.exit(1)
+
     os.makedirs(download_dir, exist_ok=True)  # Ensure the download directory exists
 
     # yt-dlp options (with progress hooks)
@@ -119,19 +136,44 @@ def download_video_with_progress(user_input, download_dir, output_format="mp4"):
 
 # Function that handles the progress bar updates
 def download_progress_hook(d):
-    """Progress hook for yt-dlp to show a progress bar"""
+    """Progress hook for yt-dlp to show a longer progress bar using tqdm"""
     if d['status'] == 'downloading':
         total_size = d.get('total_bytes') or d.get('total_bytes_estimate')
         if total_size:
             current = d['downloaded_bytes']
             percent = current / total_size * 100
-            bar_length = 40  # Length of the progress bar
-            filled_length = int(bar_length * percent // 100)
-            bar = '█' * filled_length + '-' * (bar_length - filled_length)
-            print(f"\r[{'white'}] {bar} {percent:.2f}% ", end='', flush=True)
-
+            bar_length = 80  # Length of the progress bar, you can adjust this as needed
+            if 'progress_bar' not in globals():
+                global progress_bar
+                progress_bar = tqdm(total=total_size, unit='B', unit_scale=True, bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{rate_fmt}]")
+            progress_bar.update(current - progress_bar.n)
+            progress_bar.set_description(f'{percent:.2f}%')
     elif d['status'] == 'finished':
+        if 'progress_bar' in globals():
+            progress_bar.n = progress_bar.total
+            progress_bar.last_print_n = progress_bar.n
+            progress_bar.update(0)
+            progress_bar.close()
         print(f"\nDownload finished: {d['filename']}")
+
+# Function to display the hidden menu
+def hidden_menu():
+    """Display a hidden menu to the user for additional options."""
+    print("\n--- Hidden Menu ---")
+    print("1. Change download directory")
+    print("2. Exit")
+    
+    choice = input("Select an option: ").strip()
+    
+    if choice == "1":
+        new_dir = input("Enter new download directory: ").strip()
+        save_config(new_dir)
+        print(f"Download directory updated to: {new_dir}")
+    elif choice == "2":
+        print("Exiting...")
+        sys.exit(0)
+    else:
+        print("Invalid option. Returning to main program.")
 
 # Run script
 if __name__ == "__main__":
