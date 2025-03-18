@@ -59,15 +59,12 @@ def convert_video(input_file, output_format):
     output_file = os.path.splitext(input_file)[0] + f".{output_format}"
 
     try:
-        # Adjust FFmpeg conversion based on output format (MP3 for audio)
         if output_format == 'mp3':
-            # Convert video/audio to MP3 (audio-only conversion)
             result = subprocess.run([ 
                 "ffmpeg", "-y", "-i", input_file,
                 "-vn", "-acodec", "libmp3lame", "-ab", "192k", output_file
             ], check=True, capture_output=True, text=True)
         else:
-            # Standard video conversion (e.g., MP4 or MOV)
             result = subprocess.run([ 
                 "ffmpeg", "-y", "-i", input_file,
                 "-c:v", "copy", "-c:a", "aac", "-loglevel", "error", output_file
@@ -100,7 +97,6 @@ def download_video_with_progress(user_input, download_dir, output_format="mp4"):
     if not validate_directory(download_dir):
         logging.error(f"Download directory '{download_dir}' is invalid. Exiting.")
         sys.exit(1)
-
     os.makedirs(download_dir, exist_ok=True)  # Ensure the download directory exists
 
     # yt-dlp options (with progress hooks)
@@ -162,9 +158,8 @@ def hidden_menu():
     print("\n--- Hidden Menu ---")
     print("1. Change download directory")
     print("2. Exit")
-    
+    print("--------------------")
     choice = input("Select an option: ").strip()
-    
     if choice == "1":
         new_dir = input("Enter new download directory: ").strip()
         save_config(new_dir)
@@ -186,7 +181,8 @@ if __name__ == "__main__":
     download_directory = load_config()
 
     # Ask the user if they want to go to the hidden menu
-    if input("Do you want to go to the hidden menu? (y/n): ").strip().lower() == "y":
+    menu_choice = input("Do you want to go to the hidden menu? (y/n): ").strip().lower()
+    if menu_choice == "y":
         hidden_menu()
 
     # Ask the user for input (search term or URL)
