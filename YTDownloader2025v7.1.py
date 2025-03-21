@@ -37,6 +37,8 @@ from io import BytesIO
 import time
 import sys
 import signal
+import tempfile
+import glob
 
 # Configure logging system to track application events and errors
 logging.basicConfig(
@@ -238,6 +240,28 @@ class DownloadCancelledError(Exception):
     """Custom exception for cancelled downloads."""
     pass
 
+def get_ffmpeg_path():
+    """Get the FFmpeg path, considering both development and PyInstaller environments."""
+    if getattr(sys, 'frozen', False):
+        # If running as compiled executable
+        base_path = sys._MEIPASS
+    else:
+        # If running in development
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    
+    # Try to find ffmpeg in various locations
+    possible_paths = [
+        os.path.join(base_path, 'ffmpeg.exe'),
+        os.path.join(os.path.dirname(base_path), 'ffmpeg.exe'),
+        shutil.which('ffmpeg'),
+    ]
+    
+    for path in possible_paths:
+        if path and os.path.exists(path):
+            return path
+            
+    return None
+
 class YoutubeDownloader:
     """Core functionality for downloading YouTube videos with yt-dlp.
     
@@ -258,6 +282,13 @@ class YoutubeDownloader:
         self.current_info = None
         self.cancel_requested = False
         self.ydl_instance = None
+        self.download_complete_callback = None
+        self.download_error_callback = None
+        
+        # Initialize FFmpeg path
+        self.ffmpeg_path = get_ffmpeg_path()
+        if not self.ffmpeg_path:
+            logging.warning("FFmpeg not found. Some features may not work properly.")
     
     def progress_hook(self, d):
         """Process download progress updates from yt-dlp.
@@ -476,59 +507,40 @@ class YoutubeDownloader:
             logging.error(f"Error fetching formats: {e}")
             return [], None
     
-    def download_video(self, url, download_dir, selected_format, filename_template=None):
-        """Download a YouTube video with the selected format."""
-        self.downloading = True
-        self.cancel_requested = False
-        video_title = "Unknown"
+    def download_video(self, url, download_dir, selected_format, complete_callback=None, error_callback=None):
+        """Download a video from the given URL."""
+        self.download_complete_callback = complete_callback
+        self.download_error_callback = error_callback
         
         try:
-            # Default filename template if not provided
-            if not filename_template:
-                filename_template = os.path.join(download_dir, '%(title)s.%(ext)s')
-            else:
-                # If custom filename provided, sanitize it first
-                filename_template = sanitize_filename(filename_template)
-                # Use it with appropriate extension
-                ext = 'mp3' if selected_format == 'mp3' else 'mp4'
-                filename_template = os.path.join(download_dir, f"{filename_template}.{ext}")
-            
-            # Basic yt-dlp options
+            # Configure yt-dlp options
             ydl_opts = {
-                'noplaylist': True,
-                'progress_hooks': [self.progress_hook],
-                'outtmpl': filename_template,
-                'restrictfilenames': True,
-                'quiet': False,  # Show progress
+                'format': selected_format,
+                'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
+                'progress_hooks': [self.update_progress],
+                'quiet': True,
                 'no_warnings': True,
+                'extract_flat': False,
                 'nocheckcertificate': True,
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-                },
-                'socket_timeout': 30,
-                'retries': 3,
                 'ignoreerrors': False,
-                'verbose': False,
-                'merge_output_format': 'mp4',
-                'postprocessors': [{
-                    'key': 'FFmpegVideoConvertor',
-                    'preferedformat': 'mp4',
-                }],
-                'buffersize': 1024 * 16,
-                'concurrent_fragment_downloads': 3,
-                'progress': True,  # Enable progress display
-                'noprogress': False,  # Ensure progress is shown
-                'format': selected_format,  # Use selected format directly
+                'no_color': True,
+                'prefer_insecure': False,
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                }
             }
-            
-            # Find FFmpeg path
-            ffmpeg_path = shutil.which("ffmpeg")
-            if ffmpeg_path:
-                ydl_opts['ffmpeg_location'] = ffmpeg_path
-            
-            # Configure options based on selected format
+
+            # Set FFmpeg path if available
+            if self.ffmpeg_path:
+                ydl_opts['ffmpeg_location'] = self.ffmpeg_path
+                logging.info(f"Using FFmpeg from: {self.ffmpeg_path}")
+            else:
+                logging.warning("FFmpeg path not set. Some features may not work properly.")
+
+            # Configure format based on selection
             if selected_format == 'mp3':
-                # MP3 audio download configuration
+                if not self.ffmpeg_path:
+                    raise ValueError("FFmpeg is required for MP3 conversion but was not found.")
                 ydl_opts.update({
                     'format': 'bestaudio/best',
                     'postprocessors': [{
@@ -537,187 +549,113 @@ class YoutubeDownloader:
                         'preferredquality': '192',
                     }],
                     'prefer_ffmpeg': True,
-                    'keepvideo': False,
+                    'keepvideo': False
                 })
-            elif selected_format == 'best':
-                # Best quality video download
-                ydl_opts.update({
-                    'format': 'bestvideo+bestaudio/best',
-                    'merge_output_format': 'mp4',
-                    'prefer_ffmpeg': True,
-                })
-            elif selected_format.isdigit() or selected_format in ['mp4', 'webm', 'mov']:
-                # Specific format ID or container format
-                if selected_format.isdigit():
-                    ydl_opts.update({
-                        'format': selected_format + '+bestaudio/best',
-                        'merge_output_format': 'mp4',
-                        'prefer_ffmpeg': True,
-                    })
-                else:
-                    # Container format specification
-                    ydl_opts.update({
-                        'format': 'bestvideo+bestaudio/best',
-                        'merge_output_format': selected_format,
-                        'prefer_ffmpeg': True,
-                    })
             else:
-                # Quality-based selection (e.g., "1080p", "720p")
-                try:
-                    height = int(selected_format.rstrip('p'))
-                    ydl_opts.update({
-                        'format': f'bestvideo[height<={height}]+bestaudio/best[height<={height}]',
-                        'merge_output_format': 'mp4',
-                        'prefer_ffmpeg': True,
-                    })
-                except ValueError:
-                    # If we can't parse the format as a resolution, use it directly
-                    ydl_opts.update({
-                        'format': selected_format,
-                        'merge_output_format': 'mp4',
-                        'prefer_ffmpeg': True,
-                    })
-            
-            # Perform the download
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                # Store reference for potential cancellation
-                self.ydl_instance = ydl
-                
-                # Extract info first to get title
-                info = self.current_info or ydl.extract_info(url, download=False)
-                video_title = info.get('title', 'Unknown title')
-                
-                # Log the start of download
-                logging.info(f"Starting download: {video_title}")
-                
-                # Check if download was cancelled before starting
-                if self.cancel_requested:
-                    raise DownloadCancelledError("Download cancelled by user")
-                
-                # Perform the actual download
-                ydl.download([url])
-                
-                # If we got here without cancellation, download completed successfully
-                logging.info(f"Download completed: {video_title}")
-                
-                # Clean up temporary files
-                self._cleanup_temp_files(download_dir)
-                
-                # Set progress to 100%
-                if self.progress_callback:
-                    self.progress_callback({
-                        'percent': 100,
-                        'status': 'complete',
-                        'filename': video_title
-                    })
-                
-                return video_title, True
-                
-        except DownloadCancelledError as e:
-            # Handle cancellation specifically
-            logging.info(f"Download cancelled: {e}")
-            
-            if self.progress_callback:
-                self.progress_callback({
-                    'percent': 0,
-                    'status': 'cancelled',
-                    'filename': video_title
+                # For video formats, ensure we get both video and audio
+                ydl_opts.update({
+                    'format': f'{selected_format}+bestaudio/best',
+                    'merge_output_format': 'mp4',
+                    'prefer_ffmpeg': True
                 })
-            
-            # Clean up any partial downloads
-            self._cleanup_temp_files(download_dir)
-            
-            return video_title, False
-            
-        except yt_dlp.utils.DownloadError as e:
-            # Handle yt-dlp specific download errors
-            logging.error(f"Download error: {e}")
-            
-            # Update progress with error
-            if self.progress_callback:
-                self.progress_callback({
-                    'percent': 0,
-                    'status': 'error',
-                    'error': str(e),
-                    'filename': video_title
-                })
-            
-            # Return failure
-            return video_title, False
-        
-        except (IOError, OSError) as e:
-            # Handle file system errors
-            logging.error(f"File system error: {e}")
-            
-            if self.progress_callback:
-                self.progress_callback({
-                    'percent': 0,
-                    'status': 'error',
-                    'error': f"File error: {str(e)}",
-                    'filename': video_title
-                })
-            
-            # Return failure
-            return video_title, False
-            
+
+            # Create a temporary directory for downloads
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Temporarily download to temp directory
+                temp_opts = ydl_opts.copy()
+                temp_opts['outtmpl'] = os.path.join(temp_dir, '%(title)s.%(ext)s')
+
+                # Perform the download
+                with yt_dlp.YoutubeDL(temp_opts) as ydl:
+                    self.ydl_instance = ydl
+                    # Extract info first to get title
+                    info = ydl.extract_info(url, download=False)
+                    video_title = info.get('title', 'Unknown title')
+                    
+                    # Log the start of download
+                    logging.info(f"Starting download: {video_title}")
+                    
+                    # Download the video
+                    ydl.download([url])
+                    
+                    # Find the downloaded file in temp directory
+                    downloaded_files = os.listdir(temp_dir)
+                    if downloaded_files:
+                        # Get the main downloaded file
+                        main_file = downloaded_files[0]
+                        source_path = os.path.join(temp_dir, main_file)
+                        
+                        # Determine the final extension
+                        final_ext = 'mp3' if selected_format == 'mp3' else 'mp4'
+                        
+                        # Create the final filename with format indicator
+                        if final_ext == 'mp3':
+                            final_filename = f"{video_title} (Audio).{final_ext}"
+                        else:
+                            final_filename = f"{video_title} (Video).{final_ext}"
+                        
+                        # Sanitize filename
+                        final_filename = "".join(c for c in final_filename if c.isalnum() or c in (' ', '-', '_', '.')).rstrip()
+                        final_path = os.path.join(download_dir, final_filename)
+                        
+                        # If file already exists, add a number
+                        counter = 1
+                        base_filename = final_filename[:-len(final_ext)-1]
+                        while os.path.exists(final_path):
+                            if final_ext == 'mp3':
+                                final_filename = f"{base_filename} ({counter}) (Audio).{final_ext}"
+                            else:
+                                final_filename = f"{base_filename} ({counter}) (Video).{final_ext}"
+                            final_path = os.path.join(download_dir, final_filename)
+                            counter += 1
+                        
+                        # Move the file to the final location
+                        shutil.move(source_path, final_path)
+                        
+                        # Clean up temporary files
+                        for file in glob.glob(os.path.join(temp_dir, '*')):
+                            try:
+                                if os.path.exists(file) and file != final_path:
+                                    os.remove(file)
+                            except Exception as e:
+                                logging.warning(f"Could not remove temp file {file}: {e}")
+
+                        # Call the completion callback
+                        if self.download_complete_callback:
+                            self.download_complete_callback(video_title)
+
+            return video_title, True
+
         except Exception as e:
-            # Handle other unexpected errors
-            logging.error(f"Unexpected error: {e}")
-            
-            if self.progress_callback:
-                self.progress_callback({
-                    'percent': 0,
-                    'status': 'error',
-                    'error': str(e),
-                    'filename': video_title
-                })
-            
-            # Return failure
-            return video_title, False
-        
-        finally:
-            # Reset state flags
-            self.downloading = False
-            self.cancel_requested = False
-            self.ydl_instance = None
-    
-    @staticmethod
-    def _cleanup_temp_files(directory):
-        """Clean up temporary files created during download."""
-        try:
-            # List of temporary file extensions to remove
-            temp_extensions = [
-                '.part', '.temp', '.f140.mp4', '.f137.mp4', 
-                '.f401.mp4', '.m4a', '.webm', '.ytdl'
-            ]
-            
-            # Get list of files in the directory
-            for file in os.listdir(directory):
-                # Check if the file is a temporary file
-                is_temp = any(file.endswith(ext) for ext in temp_extensions)
-                
-                # Remove temporary file
-                if is_temp:
-                    try:
-                        os.remove(os.path.join(directory, file))
-                        logging.debug(f"Cleaned up: {file}")
-                    except (IOError, OSError) as e:
-                        logging.warning(f"Could not remove temporary file {file}: {e}")
-        
-        except Exception as e:
-            logging.warning(f"Cleanup error: {e}")
+            logging.error(f"Download error: {str(e)}")
+            if self.download_error_callback:
+                self.download_error_callback(str(e))
+            return str(e), False
+
+    def update_progress(self, d):
+        """Update the progress display with download progress information."""
+        if self.progress_callback:
+            self.progress_callback(d)
 
 class DownloadManagerApp:
     """Main application class for the YouTube Video Downloader GUI."""
     
     def __init__(self, root):
         """Initialize the application GUI."""
-        # Set the window title and main reference
         self.root = root
-        self.root.title("YouTube Video Downloader")
+        self.root.title("YouTube Downloader")
         
-        # Initialize style variable
+        # Set window icon
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.ico")
+        if os.path.exists(icon_path):
+            try:
+                self.root.iconbitmap(icon_path)
+            except tk.TclError:
+                logging.warning("Could not set window icon")
+        
+        # Set dark theme
         self.style = ttk.Style()
+        self.style.theme_use('clam')
         
         # Set window size to be just bigger than default
         window_width = 850
@@ -1393,92 +1331,6 @@ class DownloadManagerApp:
         # No specific action needed when selecting a format
         pass
     
-    def update_progress(self, progress_info):
-        """Update the progress display with download progress information."""
-        try:
-            # Update progress bar
-            percent = progress_info.get('percent', 0)
-            self.progress['value'] = percent
-            
-            # Update status text based on status type
-            status = progress_info.get('status', '')
-            filename = progress_info.get('filename', '')
-            
-            if status == 'downloading':
-                status_text = f"Downloading: {percent}% of {filename}"
-            elif status == 'converting':
-                status_text = f"Converting {filename}..."
-            elif status == 'complete':
-                status_text = f"Download completed: {filename}"
-            elif status == 'cancelled':
-                status_text = "Download cancelled"
-            elif status == 'error':
-                error = progress_info.get('error', 'Unknown error')
-                status_text = f"Error: {error[:50]}..." if len(error) > 50 else f"Error: {error}"
-            else:
-                status_text = f"Downloading: {percent}%"
-            
-            self.status_label.config(text=status_text)
-            
-            # Update speed and ETA if available
-            speed = progress_info.get('speed')
-            if speed:
-                self.speed_label.config(text=f"Speed: {speed}")
-            else:
-                self.speed_label.config(text="")
-                
-            eta = progress_info.get('eta')
-            if eta:
-                self.eta_label.config(text=f"ETA: {eta}")
-            else:
-                self.eta_label.config(text="")
-                
-            # Force UI update
-            self.root.update_idletasks()
-            
-            # Update button states based on progress
-            if status == 'complete' or status == 'cancelled' or status == 'error':
-                self.download_in_progress = False
-                self.cancel_button.config(state=tk.DISABLED)
-                self.download_button.config(state=tk.NORMAL)
-                self.fetch_button.config(state=tk.NORMAL)
-                
-        except Exception as e:
-            logging.error(f"Error updating progress: {e}")
-    
-    def get_selected_format(self):
-        """Get the currently selected format ID or quality."""
-        # Get base format type (mp3 or mp4)
-        base_format = self.format_var.get()
-        
-        if base_format == "mp3":
-            return "mp3"
-            
-        # For video, get the selected quality from the treeview
-        selected_items = self.format_list.selection()
-        if not selected_items:
-            # If nothing selected, use best quality
-            return "bestvideo+bestaudio/best"
-            
-        # Get the selected item's values
-        selected_item = selected_items[0]
-        values = self.format_list.item(selected_item, 'values')
-        
-        if not values:
-            return "bestvideo+bestaudio/best"
-            
-        # Get resolution/quality from the values
-        resolution = values[0]
-        
-        # Find the corresponding format
-        for fmt in self.available_formats:
-            if fmt.get('quality_name') == resolution or fmt.get('resolution') == resolution:
-                # Return the exact format ID with best audio
-                return f"{fmt['id']}+bestaudio/best"
-        
-        # If we couldn't find a specific ID, use the resolution with best audio
-        return f"bestvideo[height={resolution.rstrip('p')}]+bestaudio/best[height={resolution.rstrip('p')}]"
-    
     def download_video(self):
         """Start the video download process."""
         if not self.video_info:
@@ -1515,129 +1367,49 @@ class DownloadManagerApp:
         self.cancel_button.config(state=tk.NORMAL)
         self.download_in_progress = True
 
-        # Configure yt-dlp options
-        ydl_opts = {
-            'format': selected_format,
-            'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
-            'progress_hooks': [self.update_progress],
-            'quiet': False,  # Changed to False to show progress
-            'no_warnings': True,
-            'extract_flat': False,
-            'nocheckcertificate': True,
-            'ignoreerrors': True,
-            'no_color': True,
-            'prefer_insecure': False,
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            },
-            'merge_output_format': 'mp4',  # Force MP4 output
-            'postprocessors': [{
-                'key': 'FFmpegVideoConvertor',
-                'preferedformat': 'mp4',
-            }],
-            # Optimize download speed
-            'buffersize': 1024 * 16,  # Increase buffer size
-            'concurrent_fragment_downloads': 3,  # Download fragments in parallel
-        }
+        def download_thread():
+            try:
+                url = self.video_info.get('webpage_url')
+                if not url:
+                    raise ValueError("No valid URL found")
+                
+                self.downloader.download_video(
+                    url=url,
+                    download_dir=download_dir,
+                    selected_format=selected_format,
+                    complete_callback=self._on_download_complete,
+                    error_callback=self._on_download_error
+                )
 
-        # Apply speed boost optimizations if enabled
-        if self.speed_boost_active:
-            ydl_opts.update({
-                'buffer_size': 32768,  # Increased buffer size
-                'concurrent_fragments': 3,  # Parallel downloads
-                'chunk_size': 10485760,  # 10MB chunks
-                'retries': 10,  # More retries
-                'fragment_retries': 10,
-                'file_access_retries': 10,
-                'extractor_retries': 10,
-                'socket_timeout': 30,  # Longer timeout
-                'noprogress': False,
-                'progress': True
-            })
+            except Exception as e:
+                logging.error(f"Download thread error: {str(e)}")
+                self.root.after(0, lambda: self._on_download_error(str(e)))
 
         # Start download in a separate thread
-        self.download_thread = threading.Thread(
-            target=self._download_thread_func,
-            args=(self.video_info['webpage_url'], download_dir, selected_format, ydl_opts)
-        )
-        self.download_thread.daemon = True
-        self.download_thread.start()
+        threading.Thread(target=download_thread, daemon=True).start()
 
-    def _download_thread_func(self, url, download_dir, selected_format, ydl_opts):
-        """Thread function for downloading the video."""
-        try:
-            # Configure format based on selection
-            if selected_format == 'mp3':
-                ydl_opts.update({
-                    'format': 'bestaudio/best',
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '192',
-                    }],
-                    'prefer_ffmpeg': True,
-                    'keepvideo': False,
-                })
-            else:
-                # For video formats, ensure we get both video and audio
-                ydl_opts.update({
-                    'format': selected_format,  # This now includes bestaudio
-                    'merge_output_format': 'mp4',
-                    'prefer_ffmpeg': True,
-                    'postprocessors': [{
-                        'key': 'FFmpegVideoConvertor',
-                        'preferedformat': 'mp4',
-                    }],
-                    'writesubtitles': False,
-                    'writeautomaticsub': False,
-                    'subtitleslangs': [],
-                    'keepvideo': False,
-                })
+    def _on_download_complete(self, video_title):
+        """Handle successful download completion."""
+        self.progress.configure(value=100)
+        self.status_label.config(text=f"Download completed: {video_title}")
+        messagebox.showinfo("Success", f"'{video_title}' has been downloaded successfully!")
+        self._reset_ui_state()
 
-            # Find FFmpeg path
-            ffmpeg_path = shutil.which("ffmpeg")
-            if ffmpeg_path:
-                ydl_opts['ffmpeg_location'] = ffmpeg_path
+    def _on_download_error(self, error_message):
+        """Handle download error."""
+        self.progress.configure(value=0)
+        self.status_label.config(text=f"Error: {error_message[:50]}...")
+        messagebox.showerror("Download Failed", f"Download error: {error_message}")
+        self._reset_ui_state()
 
-            # Perform the download
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                # Extract info first to get title
-                info = ydl.extract_info(url, download=False)
-                video_title = info.get('title', 'Unknown title')
+    def _reset_ui_state(self):
+        """Reset UI elements to their default state."""
+        self.download_button.config(state=tk.NORMAL)
+        self.fetch_button.config(state=tk.NORMAL)
+        self.speed_boost_button.config(state=tk.NORMAL)
+        self.cancel_button.config(state=tk.DISABLED)
+        self.download_in_progress = False
 
-                # Log the start of download
-                logging.info(f"Starting download: {video_title}")
-
-                # Perform the actual download
-                ydl.download([url])
-
-                # Log completion
-                logging.info(f"Download completed: {video_title}")
-
-                # Update UI with success
-                self.root.after(0, lambda: self.status_label.config(text=f"Download completed: {video_title}"))
-                self.root.after(0, lambda: messagebox.showinfo("Success", f"'{video_title}' has been downloaded successfully!"))
-
-        except yt_dlp.utils.DownloadError as e:
-            # Handle download errors
-            error_msg = str(e)
-            self.root.after(0, lambda: self.status_label.config(text=f"Error: {error_msg[:50]}..."))
-            self.root.after(0, lambda: messagebox.showerror("Download Failed", f"Download error: {error_msg}"))
-
-        except Exception as e:
-            # Handle other errors
-            error_msg = str(e)
-            self.root.after(0, lambda: self.status_label.config(text=f"Error: {error_msg[:50]}..."))
-            self.root.after(0, lambda: messagebox.showerror("Error", f"An unexpected error occurred: {error_msg}"))
-
-        finally:
-            # Re-enable buttons
-            self.root.after(0, lambda: self.download_button.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.fetch_button.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.speed_boost_button.config(state=tk.NORMAL))
-            self.root.after(0, lambda: self.cancel_button.config(state=tk.DISABLED))
-            self.download_in_progress = False
-    
     def cancel_download(self):
         """Cancel the current download."""
         if not self.download_in_progress:
@@ -1865,6 +1637,106 @@ class DownloadManagerApp:
         # Auto-close the popup after 3 seconds
         popup.after(3000, popup.destroy)
 
+    def get_selected_format(self):
+        """Get the currently selected format ID or quality."""
+        # Get base format type (mp3 or mp4)
+        base_format = self.format_var.get()
+        
+        if base_format == "mp3":
+            return "mp3"
+            
+        # For video, get the selected quality from the treeview
+        selected_items = self.format_list.selection()
+        if not selected_items:
+            # If nothing selected, use best quality
+            return "bestvideo+bestaudio/best"
+            
+        # Get the selected item's values
+        selected_item = selected_items[0]
+        values = self.format_list.item(selected_item, 'values')
+        
+        if not values:
+            return "bestvideo+bestaudio/best"
+            
+        # Get resolution/quality from the values
+        resolution = values[0]
+        
+        # Find the corresponding format
+        for fmt in self.available_formats:
+            if fmt.get('quality_name') == resolution or fmt.get('resolution') == resolution:
+                # Return the exact format ID with best audio
+                return f"{fmt['id']}+bestaudio/best"
+        
+        # If we couldn't find a specific ID, use the resolution with best audio
+        return f"bestvideo[height={resolution.rstrip('p')}]+bestaudio/best[height={resolution.rstrip('p')}]"
+
+    def update_progress(self, progress_info):
+        """Update the progress display with download progress information."""
+        try:
+            # Update progress bar
+            percent = progress_info.get('percent', 0)
+            self.progress['value'] = percent
+            
+            # Update status text based on status type
+            status = progress_info.get('status', '')
+            filename = progress_info.get('filename', '')
+            
+            if status == 'downloading':
+                # Format the status text with percentage
+                status_text = f"Downloading: {percent}% - {filename}"
+                # Update speed and ETA
+                speed = progress_info.get('speed')
+                if speed:
+                    self.speed_label.config(text=f"Speed: {speed}")
+                else:
+                    self.speed_label.config(text="")
+                    
+                eta = progress_info.get('eta')
+                if eta:
+                    self.eta_label.config(text=f"ETA: {eta}")
+                else:
+                    self.eta_label.config(text="")
+            elif status == 'converting':
+                status_text = f"Converting {filename}..."
+                self.speed_label.config(text="")
+                self.eta_label.config(text="")
+            elif status == 'complete':
+                status_text = f"Download completed: {filename}"
+                self.speed_label.config(text="")
+                self.eta_label.config(text="")
+                self.progress['value'] = 100  # Ensure progress bar is full
+            elif status == 'cancelled':
+                status_text = "Download cancelled"
+                self.speed_label.config(text="")
+                self.eta_label.config(text="")
+                self.progress['value'] = 0
+            elif status == 'error':
+                error = progress_info.get('error', 'Unknown error')
+                status_text = f"Error: {error[:50]}..." if len(error) > 50 else f"Error: {error}"
+                self.speed_label.config(text="")
+                self.eta_label.config(text="")
+                self.progress['value'] = 0
+            else:
+                status_text = f"Downloading: {percent}%"
+                self.speed_label.config(text="")
+                self.eta_label.config(text="")
+            
+            # Update status label
+            self.status_label.config(text=status_text)
+            
+            # Force UI update
+            self.root.update_idletasks()
+            
+            # Update button states based on progress
+            if status == 'complete' or status == 'cancelled' or status == 'error':
+                self.download_in_progress = False
+                self.cancel_button.config(state=tk.DISABLED)
+                self.download_button.config(state=tk.NORMAL)
+                self.fetch_button.config(state=tk.NORMAL)
+                
+        except Exception as e:
+            logging.error(f"Error updating progress: {e}")
+
 def main():
     """Main entry point for the application."""
     try:
@@ -1878,23 +1750,6 @@ def main():
         # Create and start the GUI
         root = tk.Tk()
         app = DownloadManagerApp(root)
-        
-        # Set window icon if available
-        try:
-            # For Windows
-            if os.name == 'nt':
-                root.iconbitmap(default='icon.ico')
-            # For Linux/Mac (using safe alternative approach)
-            else:
-                logo = tk.PhotoImage(file='icon.png')
-                # Use public method instead of accessing protected member
-                root.iconphoto(True, logo)
-        except FileNotFoundError:
-            # Icon file not found
-            pass
-        except tk.TclError:
-            # Tk error handling icon
-            pass
         
         # Start main loop
         root.mainloop()
