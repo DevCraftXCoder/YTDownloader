@@ -224,7 +224,7 @@ class YoutubeDownloader:
                 'preferedformat': 'mp4',           # Convert to MP4 format
             }],
         }
-
+    
     def progress_hook(self, d):
         """Process download progress updates from yt-dlp."""
         if not self.downloading or self.cancelled:  # Check if download is active or cancelled
@@ -1692,7 +1692,7 @@ class DownloadManagerApp:
         self.thumbnail_image = None
         self.video_info = None
         self.available_formats = []
-    
+
     def toggle_speed_boost(self):
         """Toggle speed boost mode for faster downloads."""
         # Toggle the speed boost state between True and False
