@@ -291,11 +291,7 @@ class YoutubeDownloader:
             logging.warning("FFmpeg not found. Some features may not work properly.")
     
     def progress_hook(self, d):
-        """Process download progress updates from yt-dlp.
-        
-        This method is called by yt-dlp during the download process to report
-        progress, speed, and estimated time remaining.
-        """
+        logging.info(f"Progress: {d}")
         if not self.downloading or self.cancel_requested:
             if self.cancel_requested and d['status'] == 'downloading':
                 raise DownloadCancelledError("Download cancelled by user")
@@ -634,8 +630,13 @@ class YoutubeDownloader:
 
     def update_progress(self, d):
         """Update the progress display with download progress information."""
-        if self.progress_callback:
-            self.progress_callback(d)
+        if d['status'] == 'downloading':
+            total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate')
+            downloaded_bytes = d.get('downloaded_bytes', 0)
+            
+            if total_bytes:
+                percent = (downloaded_bytes / total_bytes) * 100
+                self.progress_callback({'percent': percent, 'status': 'downloading'})
 
 class DownloadManagerApp:
     """Main application class for the YouTube Video Downloader GUI."""
