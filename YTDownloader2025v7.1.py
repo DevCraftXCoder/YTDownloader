@@ -631,12 +631,17 @@ class YoutubeDownloader:
     def update_progress(self, d):
         """Update the progress display with download progress information."""
         if d['status'] == 'downloading':
+            # Add debug logging to see what's coming in
+            logging.debug(f"Download progress data: {d}")
+            
             total_bytes = d.get('total_bytes') or d.get('total_bytes_estimate')
             downloaded_bytes = d.get('downloaded_bytes', 0)
             
             if total_bytes:
                 percent = (downloaded_bytes / total_bytes) * 100
-                self.progress_callback({'percent': percent, 'status': 'downloading'})
+                # Make sure this call happens and includes the correct percent value
+                if self.progress_callback:
+                    self.progress_callback({'percent': percent, 'status': 'downloading'})
 
 class DownloadManagerApp:
     """Main application class for the YouTube Video Downloader GUI."""
@@ -1410,7 +1415,7 @@ class DownloadManagerApp:
         self.speed_boost_button.config(state=tk.NORMAL)
         self.cancel_button.config(state=tk.DISABLED)
         self.download_in_progress = False
-
+    
     def cancel_download(self):
         """Cancel the current download."""
         if not self.download_in_progress:
