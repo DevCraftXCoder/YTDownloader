@@ -1,24 +1,3 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-"""
-YouTube Video Downloader
-An application that lets users download YouTube videos with quality selection options.
-
-Features:
-- Download videos in MP4/WebM format with selectable quality
-- Download audio in MP3 format
-- Progress tracking with visual feedback
-- Dark mode support
-- Cross-platform compatibility
-- Thumbnail preview
-- Custom filename support
-- Download cancellation
-- Improved format detection
-- Proper resource management
-- Enhanced error handling
-"""
-
 # Import required libraries
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -640,7 +619,7 @@ class YoutubeDownloader:
             if total_bytes:
                 percent = (downloaded_bytes / total_bytes) * 100
                 # Make sure this call happens and includes the correct percent value
-                if self.progress_callback:
+            if self.progress_callback:
                     self.progress_callback({'percent': percent, 'status': 'downloading'})
 
 class DownloadManagerApp:
@@ -665,7 +644,7 @@ class DownloadManagerApp:
         
         # Set window size to be just bigger than default
         window_width = 850
-        window_height = 800
+        window_height = 1000  # Increased from 800 to 1000
         screen_width = root.winfo_screenwidth()
         screen_height = root.winfo_screenheight()
         # Calculate position to center the window
@@ -675,7 +654,7 @@ class DownloadManagerApp:
         self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
         
         # Set minimum window size to prevent too small windows
-        self.root.minsize(750, 700)
+        self.root.minsize(750, 900)  # Increased minimum height from 700 to 900
         
         # Fix for Windows button styling
         if os.name == 'nt':
@@ -1025,9 +1004,13 @@ class DownloadManagerApp:
         control_frame = ttk.Frame(self.main_frame)
         control_frame.pack(fill=tk.X, padx=5, pady=5)
 
+        # Create a frame for buttons on the left
+        button_frame = ttk.Frame(control_frame)
+        button_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
         # Download button (using regular tk.Button for better styling)
         self.download_button = tk.Button(
-            control_frame,
+            button_frame,
             text="Download",
             command=self.download_video,
             bg="#ff0000",
@@ -1045,7 +1028,7 @@ class DownloadManagerApp:
 
         # Speed boost button (using regular tk.Button)
         self.speed_boost_button = tk.Button(
-            control_frame,
+            button_frame,
             text="⚡ Speed Boost",
             command=self.toggle_speed_boost,
             bg="#00ff00",  # Bright green color
@@ -1063,7 +1046,7 @@ class DownloadManagerApp:
 
         # Dark mode toggle button (using regular tk.Button)
         self.dark_mode_button = tk.Button(
-            control_frame,
+            button_frame,
             text="🌙 Dark Mode",
             command=self.toggle_dark_mode,
             bg="#0078d7",
@@ -1081,7 +1064,7 @@ class DownloadManagerApp:
 
         # Cancel button (using regular tk.Button)
         self.cancel_button = tk.Button(
-            control_frame,
+            button_frame,
             text="Cancel",
             command=self.cancel_download,
             bg="#555555",
@@ -1097,6 +1080,44 @@ class DownloadManagerApp:
         )
         self.cancel_button.pack(side=tk.LEFT, padx=5)
         create_tooltip(self.cancel_button, "Cancel the current download")
+
+        # Create a frame for GitHub links on the right
+        github_frame = ttk.Frame(control_frame)
+        github_frame.pack(side=tk.RIGHT, padx=5)
+
+        # Create GitHub link label
+        github_link = tk.Label(
+            github_frame,
+            text="DevCraftXCoder",
+            fg="#0066cc",  # Blue color for link
+            cursor="hand2",  # Hand cursor on hover
+            font=("", 9, "underline"),
+            bg=self.root.cget("bg")  # Match the root window's background
+        )
+        github_link.pack(side=tk.TOP, pady=(0, 2))  # Add small padding at bottom
+        github_link.bind("<Button-1>", lambda e: self.open_github())
+        github_link.bind("<Enter>", lambda e: github_link.config(fg="#003366"))  # Darker blue on hover
+        github_link.bind("<Leave>", lambda e: github_link.config(fg="#0066cc"))  # Original blue on leave
+        create_tooltip(github_link, "Visit DevCraftXCoder on GitHub")
+
+        # Create JDM8102 link label (smaller size)
+        jdm_link = tk.Label(
+            github_frame,
+            text="JDM8102",
+            fg="#0066cc",  # Blue color for link
+            cursor="hand2",  # Hand cursor on hover
+            font=("", 7, "underline"),  # Smaller font size
+            bg=self.root.cget("bg")  # Match the root window's background
+        )
+        jdm_link.pack(side=tk.TOP)  # Place directly under DevCraftXCoder
+        jdm_link.bind("<Button-1>", lambda e: self.open_jdm_github())
+        jdm_link.bind("<Enter>", lambda e: jdm_link.config(fg="#003366"))  # Darker blue on hover
+        jdm_link.bind("<Leave>", lambda e: jdm_link.config(fg="#0066cc"))  # Original blue on leave
+        create_tooltip(jdm_link, "Visit JDM8102 on GitHub")
+
+        # Store references to the labels for theme updates
+        self.github_link = github_link
+        self.jdm_link = jdm_link
 
         # Initialize speed boost state
         self.speed_boost_active = False
@@ -1743,6 +1764,16 @@ class DownloadManagerApp:
         except Exception as e:
             logging.error(f"Error updating progress: {e}")
 
+    def open_github(self):
+        """Open the GitHub profile in the default browser."""
+        import webbrowser
+        webbrowser.open("https://github.com/DevCraftXCoder")
+
+    def open_jdm_github(self):
+        """Open JDM8102's GitHub profile in the default browser."""
+        import webbrowser
+        webbrowser.open("https://github.com/JDM8102")
+
 def main():
     """Main entry point for the application."""
     try:
@@ -1781,3 +1812,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+#Coded by DevCraftXCoder & JDM8102
